@@ -3,9 +3,11 @@ package test
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/alranel/arduino-testlib/internal/cliclient"
@@ -45,17 +47,22 @@ type TestResults struct {
 	Tests []TestResult `json:"tests"`
 }
 
-func TestLib(libName string, tr TestResults, force bool, instance *cliclient.CliInstance) TestResults {
+func TestLibByName(libName string, tr TestResults, force bool, instance *cliclient.CliInstance) TestResults {
 	libPath := util.LibPathFromName(libName)
+	return TestLib(libPath, tr, force, instance)
+}
+
+func TestLib(libPath string, tr TestResults, force bool, instance *cliclient.CliInstance) TestResults {
+	libPath, _ = filepath.Abs(libPath)
 	if _, err := os.Stat(libPath); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Library not found in %s\n", libName, libPath)
+		fmt.Fprintf(os.Stderr, "Library not found in directory: %s\n", libPath)
 		return tr
 	}
 
 	// Get library name
 	properties, err := ini.Load(path.Join(libPath, "library.properties"))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Could not open library.properties\n", libName)
+		fmt.Fprintf(os.Stderr, "Could not open library.properties: %s\n", libPath)
 		return tr
 	}
 	name := properties.Section("").Key("name").String()
@@ -64,7 +71,7 @@ func TestLib(libName string, tr TestResults, force bool, instance *cliclient.Cli
 	architectures := strings.Split(properties.Section("").Key("architectures").String(), ",")
 	includes := strings.Split(properties.Section("").Key("includes").String(), ",")
 	if name == "" {
-		fmt.Printf("[%s] No library name found in library.properties\n", libName)
+		fmt.Printf("No library name found in library.properties: %s\n", libPath)
 		return tr
 	}
 
@@ -170,13 +177,10 @@ fqbn:
 		}
 
 		// Test examples
-		examples, err := ioutil.ReadDir(path.Join(libPath, "examples"))
-		if err == nil {
-			for _, example := range examples {
-				if !example.IsDir() {
-					continue
-				}
-				resB, out := instance.CompileSketch(path.Join(libPath, "examples", example.Name()), libPath, fqbn)
+		filepath.Walk(path.Join(libPath, "examples"), func(path string, info fs.FileInfo, err error) error {
+			if strings.HasSuffix(info.Name(), ".ino") {
+				exampleDir := filepath.Dir(path)
+				resB, out := instance.CompileSketch(exampleDir, libPath, fqbn)
 				var res CompilationResult
 				if resB {
 					res = PASS
@@ -184,12 +188,13 @@ fqbn:
 					res = FAIL
 				}
 				result.Examples = append(result.Examples, exampleResult{
-					Name:   example.Name(),
+					Name:   filepath.Base(exampleDir),
 					Result: res,
 					Log:    out,
 				})
 			}
-		}
+			return nil
+		})
 
 		tr.Tests = append(tr.Tests, result)
 	}
